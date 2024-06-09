@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import type { TimelineEvent } from '@vue/devtools-kit'
-import { computed } from 'vue'
+import type { TimelineEventOptions } from '@vue/devtools-kit'
+import { computed, ref, watch } from 'vue'
 import { RecycleScroller } from 'vue-virtual-scroller'
 import { formatTime } from '~/utils'
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 
 const props = defineProps<{
-  data: Array<TimelineEvent['event'] & { color?: string, id?: number }>
+  data: Array<TimelineEventOptions['event'] & { color?: string, id?: number }>
 }>()
 
 const selected = defineModel()
 const colors = ['#3e5770', '#42b983', '#0098c4']
+const scrollerRef = ref<InstanceType<typeof RecycleScroller> | null>(null)
 
 const normalizedData = computed(() => {
   let currentColorIndex = -1
@@ -19,18 +20,23 @@ const normalizedData = computed(() => {
     if (item.groupId !== currentGroupId || currentColorIndex === -1)
       currentColorIndex = (currentColorIndex + 1) % colors.length
 
-    currentGroupId = item.groupId ?? currentGroupId
+    currentGroupId = item.groupId as number ?? currentGroupId
 
     item.id = index
     item.color = colors[currentColorIndex]
   })
   return props.data
 })
+
+watch(() => normalizedData.value.length, (length) => {
+  scrollerRef.value?.scrollToItem(length - 1)
+}, { flush: 'post' })
 </script>
 
 <template>
   <div class="p3">
     <RecycleScroller
+      ref="scrollerRef"
       v-slot="{ item }"
       :items="normalizedData"
       :min-item-size="52"

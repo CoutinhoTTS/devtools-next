@@ -1,16 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { Pane, Splitpanes } from 'splitpanes'
-import type { ComponentTreeNode, InspectorState } from '@vue/devtools-kit'
+import type { CustomInspectorNode, CustomInspectorState } from '@vue/devtools-kit'
 import {
-  cancelInspectComponentInspector as cancelInspectComponentInspectorAction,
-  getComponentRenderCode as getComponentRenderCodeAction,
-  getInspectorState,
-  getInspectorTree,
-  inspectComponentInspector as inspectComponentInspectorAction,
-  onInspectorStateUpdated,
-  onInspectorTreeUpdated,
-  scrollToComponent as scrollToComponentAction,
+  DevToolsMessagingEvents,
+  rpc,
 } from '@vue/devtools-core'
 import { parse } from '@vue/devtools-kit'
 import { useElementSize, useToggle, watchDebounced } from '@vueuse/core'
@@ -52,6 +46,19 @@ function dfs(node: { id: string, children?: { id: string }[] }, path: string[] =
   return linkedList
 }
 
+function flattenTreeNodes(tree: CustomInspectorNode[]) {
+  const res: CustomInspectorNode[] = []
+  const find = (treeNode: CustomInspectorNode[]) => {
+    treeNode.forEach((item) => {
+      res.push(item)
+      if (item.children?.length)
+        find(item.children)
+    })
+  }
+  find(tree)
+  return res
+}
+
 function getNodesByDepth(list: string[][], depth: number) {
   const nodes: string[] = []
   list.forEach((item) => {
@@ -71,13 +78,15 @@ function getTargetLinkedNodes(list: string[][], target: string) {
 }
 
 const inspectorId = 'components'
-const tree = ref<ComponentTreeNode[]>([])
+const tree = ref<Array<CustomInspectorNode>>([])
 const treeNodeLinkedList = computed(() => tree.value?.length ? dfs(tree.value?.[0]) : [])
-const activeComponentState = ref<Record<string, InspectorState[]>>({})
+const flattenedTreeNodes = computed(() => flattenTreeNodes(tree.value))
+const flattenedTreeNodesIds = computed(() => flattenedTreeNodes.value.map(node => node.id))
+const activeComponentState = ref<Record<string, any[]>>({})
 const activeComponentId = ref('')
 const activeTreeNode = computed(() => {
-  const res: ComponentTreeNode[] = []
-  const find = (treeNode: ComponentTreeNode[]) => {
+  const res: CustomInspectorNode[] = []
+  const find = (treeNode: CustomInspectorNode[]) => {
     treeNode.forEach((item) => {
       if (item.id === activeComponentId.value)
         res.push(item)
@@ -118,16 +127,16 @@ const { expanded: expandedStateNodes } = createExpandedContext('component-state'
 createSelectedContext()
 
 function getComponentsInspectorTree(filter = '') {
-  return getInspectorTree({ inspectorId, filter }).then((_data) => {
-    const data = parse(_data!)
-    tree.value = data
+  return rpc.value.getInspectorTree({ inspectorId, filter }).then((data) => {
+    const res = parse(data)
+    tree.value = res
     activeComponentId.value = tree.value?.[0]?.id
     expandedTreeNodes.value = getNodesByDepth(treeNodeLinkedList.value, 1)
     componentTreeLoaded.value = true
   })
 }
 
-function normalizeComponentState(data: { state?: InspectorState[] }) {
+function normalizeComponentState(data: { state?: any[] }) {
   if (!data || !data?.state)
     return {}
   const res = {}
@@ -140,7 +149,7 @@ function normalizeComponentState(data: { state?: InspectorState[] }) {
 }
 
 function getComponentState(id: string) {
-  getInspectorState({ inspectorId, nodeId: id }).then((data) => {
+  rpc.value.getInspectorState({ inspectorId, nodeId: id }).then((data) => {
     activeComponentState.value = normalizeComponentState(parse(data!))
     expandedStateNodes.value = Array.from({ length: Object.keys(activeComponentState.value).length }, (_, i) => `${i}`)
   })
@@ -153,22 +162,42 @@ watch(activeComponentId, (id) => {
   }
 })
 
-onInspectorStateUpdated((data) => {
-  if (data.inspectorId !== inspectorId)
+function onInspectorStateUpdated(_data: string) {
+  const data = parse(_data) as {
+    inspectorId: string
+    state: CustomInspectorState
+    nodeId: string
+  }
+  if (data.inspectorId !== inspectorId || data.nodeId !== activeComponentId.value)
     return
 
-  activeComponentState.value = normalizeComponentState({ state: data.state })
-})
+  activeComponentState.value = normalizeComponentState({ state: data.state.state })
+}
+
+rpc.functions.on(DevToolsMessagingEvents.INSPECTOR_STATE_UPDATED, onInspectorStateUpdated)
 
 getComponentsInspectorTree()
 
-onInspectorTreeUpdated((data) => {
-  if (!data?.data.length || data.inspectorId !== inspectorId)
+function onInspectorTreeUpdated(_data: string) {
+  const data = parse(_data) as {
+    inspectorId: string
+    rootNodes: CustomInspectorNode[]
+  }
+  if (data.inspectorId !== inspectorId)
     return
+  tree.value = data.rootNodes
 
-  tree.value = data.data
+  if (!flattenedTreeNodesIds.value.includes(activeComponentId.value)) {
+    activeComponentId.value = tree.value?.[0]?.id
+    expandedTreeNodes.value = getNodesByDepth(treeNodeLinkedList.value, 1)
+  }
+}
 
-  // expandedTreeNodes.value = getNodesByDepth(treeNodeLinkedList.value, 1)
+rpc.functions.on(DevToolsMessagingEvents.INSPECTOR_TREE_UPDATED, onInspectorTreeUpdated)
+
+onUnmounted(() => {
+  rpc.functions.off(DevToolsMessagingEvents.INSPECTOR_STATE_UPDATED, onInspectorStateUpdated)
+  rpc.functions.off(DevToolsMessagingEvents.INSPECTOR_TREE_UPDATED, onInspectorTreeUpdated)
 })
 
 watchDebounced(filterComponentName, (v) => {
@@ -182,8 +211,8 @@ watchDebounced(filterComponentName, (v) => {
 function inspectComponentInspector() {
   inspectComponentTipVisible.value = true
   emit('onInspectComponentStart')
-  inspectComponentInspectorAction().then((_data) => {
-    const data = JSON.parse(_data!)
+  rpc.value.inspectComponentInspector().then((_data) => {
+    const data = JSON.parse(_data! as unknown as string)
     activeComponentId.value = data.id
     if (!expandedTreeNodes.value.includes(data.id))
       expandedTreeNodes.value.push(data.id)
@@ -198,17 +227,15 @@ function inspectComponentInspector() {
 
 function cancelInspectComponentInspector() {
   inspectComponentTipVisible.value = false
-  cancelInspectComponentInspectorAction()
+  rpc.value.cancelInspectComponentInspector()
 }
 
 function scrollToComponent() {
-  scrollToComponentAction({
-    id: activeComponentId.value,
-  })
+  rpc.value.scrollToComponent(activeComponentId.value)
 }
 
 function getComponentRenderCode() {
-  getComponentRenderCodeAction(activeComponentId.value).then((data) => {
+  rpc.value.getComponentRenderCode(activeComponentId.value).then((data) => {
     componentRenderCode.value = data!
     componentRenderCodeVisible.value = true
   })
@@ -251,7 +278,7 @@ function closeComponentRenderCode() {
             </button>
           </div>
           <div ref="componentTreeContainer" class="no-scrollbar flex-1 select-none overflow-scroll">
-            <ComponentTree v-model="activeComponentId" :data="tree" />
+            <ComponentTree v-model="activeComponentId" :data="tree" :with-tag="true" />
           </div>
         </div>
       </Pane>

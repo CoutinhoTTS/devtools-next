@@ -1,7 +1,7 @@
 {
   "name": "@vue/devtools-browser-extension",
   "type": "module",
-  "version": "7.2.1",
+  "version": "7.3.0-beta.3",
   "private": true,
   "author": "webfansplz",
   "license": "MIT",
@@ -14,10 +14,11 @@
   },
   "dependencies": {
     "@vue/devtools-core": "workspace:^",
+    "@vue/devtools-kit": "workspace:^",
     "@vue/devtools-shared": "workspace:^"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.0.4",
+    "@vitejs/plugin-vue": "^5.0.5",
     "vue": "^3.4.27"
   }
 }
